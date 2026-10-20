@@ -784,18 +784,25 @@ function saveSession() {
 /* ---------- Modo enfoque: detección de cara en el propio navegador (MediaPipe) ---------- */
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
-const GRACE_MS = 8000, SMILE_ON = 0.6, SMILE_HOLD = 1500, SMILE_COOLDOWN = 20000;
-const cam = { landmarker: null, stream: null, worker: null, lastSeen: 0, smileSince: 0, lastSmile: 0, loading: false, face: false };
+const POSE_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+const GRACE_MS = 20000, SMILE_ON = 0.6, SMILE_HOLD = 1500, SMILE_COOLDOWN = 20000;
+const SHOULDERS = [11, 12];
+const cam = { det: null, stream: null, worker: null, lastSeen: 0, smileSince: 0, lastSmile: 0, loading: false, present: false };
 
-async function loadLandmarker() {
-  const { FaceLandmarker, FilesetResolver } = await import(`${MP}/vision_bundle.mjs`);
+// Cara para las sonrisas; cuerpo (hombros) para seguir viéndote cuando bajas la cabeza a la libreta
+async function loadDetectors() {
+  const { FaceLandmarker, PoseLandmarker, FilesetResolver } = await import(`${MP}/vision_bundle.mjs`);
   const files = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
-  const opts = delegate => ({
-    baseOptions: { modelAssetPath: FACE_MODEL, delegate }, runningMode: 'VIDEO', numFaces: 1,
-    outputFaceBlendshapes: true, minFaceDetectionConfidence: .3, minFacePresenceConfidence: .3, minTrackingConfidence: .3
-  });
-  try { return await FaceLandmarker.createFromOptions(files, opts('GPU')); }
-  catch { return await FaceLandmarker.createFromOptions(files, opts('CPU')); }
+  const make = async (Task, model, extra) => {
+    const opts = delegate => ({ baseOptions: { modelAssetPath: model, delegate }, runningMode: 'VIDEO', ...extra });
+    try { return await Task.createFromOptions(files, opts('GPU')); }
+    catch { return await Task.createFromOptions(files, opts('CPU')); }
+  };
+  const [face, pose] = await Promise.all([
+    make(FaceLandmarker, FACE_MODEL, { numFaces: 1, outputFaceBlendshapes: true, minFaceDetectionConfidence: .3, minFacePresenceConfidence: .3, minTrackingConfidence: .3 }),
+    make(PoseLandmarker, POSE_MODEL, { numPoses: 1, minPoseDetectionConfidence: .3, minPosePresenceConfidence: .3, minTrackingConfidence: .3 })
+  ]);
+  return { face, pose };
 }
 
 async function camStart() {
@@ -806,7 +813,7 @@ async function camStart() {
     const v = $('#camVideo');
     v.srcObject = cam.stream;
     await v.play();
-    cam.landmarker ||= await loadLandmarker();
+    cam.det ||= await loadDetectors();
     cam.lastSeen = Date.now();
     // Un worker marca el ritmo: sus temporizadores no se frenan cuando la pestaña está en segundo plano
     cam.worker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 250)'], { type: 'text/javascript' })));
@@ -824,23 +831,33 @@ function camStop() {
   if (cam.worker) { cam.worker.terminate(); cam.worker = null; }
   if (cam.stream) { cam.stream.getTracks().forEach(t => t.stop()); cam.stream = null; }
   $('#camVideo').srcObject = null;
-  cam.face = false; cam.smileSince = 0;
+  cam.present = false; cam.smileSince = 0;
   renderFocusState();
 }
 
 function detect() {
   const v = $('#camVideo');
-  if (!cam.landmarker || !cam.stream || v.readyState < 2) return;
-  let res;
-  try { res = cam.landmarker.detectForVideo(v, performance.now()); } catch { return; }
+  if (!cam.det || !cam.stream || v.readyState < 2) return;
+  let res, face;
+  const ts = performance.now();
+  try {
+    res = cam.det.face.detectForVideo(v, ts);
+    face = res.faceLandmarks.length > 0;
+    cam.present = face;
+    if (!face) {
+      const lm = cam.det.pose.detectForVideo(v, ts).landmarks[0];
+      cam.present = !!lm && SHOULDERS.some(i => (lm[i].visibility ?? 1) > .5);
+    }
+  } catch { return; }
   const now = Date.now(), f = db.timer.focus;
-  cam.face = res.faceLandmarks.length > 0;
-  if (cam.face) {
+  if (cam.present) {
     cam.lastSeen = now;
     if (f.autoPaused) {
       endAway(); startTimer(); save(); renderWatch();
       toast('De vuelta · sesión reanudada');
     }
+  }
+  if (face) {
     const cats = (res.faceBlendshapes[0] || {}).categories || [];
     const score = name => (cats.find(c => c.categoryName === name) || {}).score || 0;
     const smile = (score('mouthSmileLeft') + score('mouthSmileRight')) / 2;
@@ -851,10 +868,11 @@ function detect() {
         toast(`Sonrisa detectada · ${f.smiles} ${f.smiles === 1 ? 'distracción' : 'distracciones'}`, true);
       }
     } else cam.smileSince = 0;
-  } else if (db.timer.running && now - cam.lastSeen > GRACE_MS) {
-    // El tiempo de margen no cuenta: la sesión se pausa en el último momento en que se te vio
-    pauseTimer(Math.max(cam.lastSeen, db.timer.startedAt));
-    f.away++; f.autoPaused = true; f.awayStart = cam.lastSeen;
+  } else cam.smileSince = 0;
+  if (!cam.present && db.timer.running && now - cam.lastSeen > GRACE_MS) {
+    // Los 20 s de margen cuentan como estudio; la ausencia empieza a contar desde aquí
+    pauseTimer(now);
+    f.away++; f.autoPaused = true; f.awayStart = now;
     save(); renderWatch();
     toast('No te veo · sesión en pausa', true);
   }
@@ -864,12 +882,12 @@ function detect() {
 function renderFocusState() {
   const box = $('#cam'), f = db.timer.focus, on = !!(cam.stream || cam.loading);
   box.hidden = !on;
-  box.className = 'cam' + (!on || cam.loading ? '' : f.autoPaused ? ' away' : cam.face ? ' seen' : ' missing');
+  box.className = 'cam' + (!on || cam.loading ? '' : f.autoPaused ? ' away' : cam.present ? ' seen' : ' missing');
   const ms = elapsedMs(), run = db.timer.running;
   let txt = run ? 'En marcha' : ms >= 1000 ? 'En pausa' : '';
   if (cam.loading) txt = 'Preparando cámara…';
   else if (f.autoPaused) txt = 'Pausa · fuera de cámara';
-  else if (cam.stream && run) txt = cam.face ? 'En marcha · te veo'
+  else if (cam.stream && run) txt = cam.present ? 'En marcha · te veo'
     : `¿Sigues ahí? ${Math.max(0, Math.ceil((GRACE_MS - (Date.now() - cam.lastSeen)) / 1000))} s`;
   const el = $('#watchState');
   if (el.textContent !== txt) el.textContent = txt;
