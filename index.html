@@ -784,7 +784,7 @@ function saveSession() {
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 const POSE_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
-const GRACE_MS = 20000, SMILE_ON = 0.6, SMILE_HOLD = 1500, SMILE_COOLDOWN = 20000;
+const GRACE_MS = 7000, SMILE_ON = 0.6, SMILE_HOLD = 1500, SMILE_COOLDOWN = 20000;
 const SHOULDERS = [11, 12];
 const cam = { det: null, stream: null, worker: null, lastSeen: 0, smileSince: 0, lastSmile: 0, loading: false, present: false };
 
@@ -869,7 +869,7 @@ function detect() {
     } else cam.smileSince = 0;
   } else cam.smileSince = 0;
   if (!cam.present && db.timer.running && now - cam.lastSeen > GRACE_MS) {
-    // Los 20 s de margen cuentan como estudio; la ausencia empieza a contar desde aquí
+    // Los segundos de margen cuentan como estudio; la ausencia empieza a contar desde aquí
     pauseTimer(now);
     f.away++; f.autoPaused = true; f.awayStart = now;
     save(); renderWatch();
