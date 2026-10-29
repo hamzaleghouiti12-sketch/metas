@@ -195,7 +195,21 @@ button:disabled{cursor:default}
 .tile-val{font-size:28px;font-weight:700;letter-spacing:-.035em;margin-top:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tile-val small,.big small{font-size:15px;font-weight:600;color:var(--label2);letter-spacing:-.01em;margin:0 2px 0 3px}
 .tile-sub{font-size:13px;color:var(--label2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.chart-card{padding:16px 16px 14px;margin-top:12px}
+.chart-card{padding:12px 16px 14px;margin-top:12px}
+.week-nav{display:flex;align-items:center;justify-content:space-between;margin:0 -6px 12px}
+.week-nav .cal-arrow:disabled{color:var(--label3);background:none}
+.week-label{display:flex;flex-direction:column;align-items:center;line-height:1.25}
+.week-label b{font-size:15px;font-weight:600}
+.week-label span{font-size:13px;color:var(--label2)}
+.days .future{color:var(--label3)}
+.by-goal{margin-top:16px;padding-top:12px;border-top:1px solid var(--sep);display:flex;flex-direction:column;gap:10px}
+.bg-row{display:grid;grid-template-columns:10px 1fr auto;align-items:center;column-gap:10px;row-gap:5px}
+.bg-row .dot{background:var(--goal)}
+.bg-name{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bg-time{font-size:15px;color:var(--label2);font-variant-numeric:tabular-nums}
+.bg-track{grid-column:2 / 4;height:6px;border-radius:3px;background:var(--fill);overflow:hidden}
+.bg-track i{display:block;height:100%;border-radius:3px;background:var(--goal)}
+.by-goal .none{font-size:13px;color:var(--label2);text-align:center}
 .chart-top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:18px}
 .cap{font-size:13px;color:var(--label2)}
 .big{font-size:28px;font-weight:700;letter-spacing:-.035em;margin-top:2px}
@@ -439,14 +453,20 @@ kbd{font:inherit;font-size:12px;padding:1px 6px;border-radius:5px;background:var
       <div class="tile" style="--c:var(--purple)"><div class="tile-head"><i data-i="star" data-s="17"></i>Metas</div><div class="tile-val num" id="tGoals"></div><div class="tile-sub" id="tGoalsSub"></div></div>
     </div>
     <div class="card chart-card">
+      <div class="week-nav">
+        <button class="cal-arrow" id="wkPrev" aria-label="Semana anterior"><i data-i="left" data-s="20" data-w="2.4"></i></button>
+        <div class="week-label"><b id="wkTitle"></b><span id="wkRange"></span></div>
+        <button class="cal-arrow" id="wkNext" aria-label="Semana siguiente"><i data-i="right" data-s="20" data-w="2.4"></i></button>
+      </div>
       <div class="chart-top">
-        <div><div class="cap">Media diaria</div><div class="big num" id="avgVal"></div></div>
+        <div><div class="cap">Total de la semana</div><div class="big num" id="wkTotal"></div><div class="cap" id="avgVal"></div></div>
         <div class="delta" id="delta"></div>
       </div>
       <div class="chart">
         <div class="plot" id="plot"></div>
         <div class="days" id="days"></div>
       </div>
+      <div class="by-goal" id="byGoal"></div>
     </div>
 
     <div class="section-head"><h2>Sesiones</h2><button class="link" id="editSess">Editar</button></div>
@@ -950,17 +970,31 @@ function fmtAxis(min) {
   return `${Math.round(min)} min`;
 }
 
+let chartWeek = 0;
+const mondayOf = d => { const m = new Date(d); m.setHours(12, 0, 0, 0); m.setDate(m.getDate() - (m.getDay() + 6) % 7); return m; };
+
 function renderChart() {
-  const byDay = secondsByDay(), days = [];
+  const byDay = secondsByDay(), todayK = dayKey(new Date());
+  const mon = mondayOf(new Date()); mon.setDate(mon.getDate() + chartWeek * 7);
+  const days = [];
   let prev = 0;
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - i);
-    const sec = byDay[dayKey(d)] || 0;
-    if (i >= 7) prev += sec; else days.push({ d, sec, today: i === 0 });
+  for (let i = -7; i < 7; i++) {
+    const d = new Date(mon); d.setDate(mon.getDate() + i);
+    const k = dayKey(d), sec = byDay[k] || 0;
+    if (i < 0) prev += sec; else days.push({ d, k, sec, today: k === todayK, future: k > todayK });
   }
   const week = days.reduce((a, x) => a + x.sec, 0);
-  const avg = week / 7;
-  $('#avgVal').innerHTML = durHTML(Math.round(avg));
+  const elapsed = days.filter(x => !x.future).length || 1;
+  const avg = week / elapsed;
+
+  const sun = days[6].d, fmt = d => d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }).replace('.', '');
+  $('#wkTitle').textContent = chartWeek === 0 ? 'Esta semana' : chartWeek === -1 ? 'Semana pasada' : `Hace ${-chartWeek} semanas`;
+  $('#wkRange').textContent = `${fmt(mon)} – ${fmt(sun)}${sun.getFullYear() !== new Date().getFullYear() ? ' ' + sun.getFullYear() : ''}`;
+  const first = db.sessions.reduce((m, s) => (s.date < m ? s.date : m), new Date().toISOString());
+  $('#wkPrev').disabled = mon <= mondayOf(new Date(first));
+  $('#wkNext').disabled = chartWeek >= 0;
+  $('#wkTotal').innerHTML = durHTML(week);
+  $('#avgVal').textContent = `Media diaria: ${durText(Math.round(avg))}`;
 
   const delta = $('#delta');
   if (prev > 0) {
@@ -968,8 +1002,24 @@ function renderChart() {
     delta.innerHTML = p === 0 ? '<span>Igual que la semana anterior</span>'
       : `${svg(p > 0 ? 'up' : 'down', 13, 2.6)}<span>${Math.abs(p)} % ${p > 0 ? 'más' : 'menos'} que la semana anterior</span>`;
   } else {
-    delta.innerHTML = week ? '<span>Tu primera semana</span>' : '<span>Guarda una sesión para empezar</span>';
+    delta.innerHTML = week ? '<span>Sin datos de la semana anterior</span>' : '<span>Sin sesiones esta semana</span>';
   }
+
+  const groups = {};
+  db.sessions.forEach(s => {
+    const k = dayKey(new Date(s.date));
+    if (k < days[0].k || k > days[6].k) return;
+    const id = s.goalId || s.goal;
+    const g = groups[id] ||= { name: (db.goals[s.goalId] || {}).name || s.goal, color: sessionColor(s), sec: 0, n: 0 };
+    g.sec += s.seconds; g.n++;
+  });
+  const list = Object.values(groups).sort((a, b) => b.sec - a.sec);
+  const maxSec = list.length ? list[0].sec : 1;
+  $('#byGoal').innerHTML = list.length ? list.map(g => `<div class="bg-row" style="--goal:var(--${g.color})">
+      <span class="dot"></span><span class="bg-name">${esc(g.name)}</span>
+      <span class="bg-time">${durText(g.sec)} · ${g.n} ${g.n === 1 ? 'sesión' : 'sesiones'}</span>
+      <span class="bg-track"><i style="width:${(g.sec / maxSec * 100).toFixed(1)}%"></i></span></div>`).join('')
+    : '<div class="none">No hay sesiones guardadas esta semana.</div>';
 
   const top = niceTop(Math.max(...days.map(x => x.sec), avg) / 60);
   const avgPct = avg / 60 / top * 100;
@@ -987,7 +1037,7 @@ function renderChart() {
   }).join('');
   $('#plot').innerHTML = grid + avgLine + `<div class="bars">${bars}</div>`;
   $('#days').innerHTML = days.map(x =>
-    `<span class="${x.today ? 'today' : ''}">${'DLMXJVS'[x.d.getDay()]}</span>`).join('');
+    `<span class="${x.today ? 'today' : x.future ? 'future' : ''}">${'DLMXJVS'[x.d.getDay()]}</span>`).join('');
 }
 
 /* ---------- Sesiones ---------- */
@@ -1263,6 +1313,8 @@ $('#focusSwitch').onclick = toggleFocus;
 $('#exportBtn').onclick = exportData;
 $('#importBtn').onclick = () => $('#importFile').click();
 $('#importFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) importData(f); };
+$('#wkPrev').onclick = () => { chartWeek--; renderChart(); };
+$('#wkNext').onclick = () => { if (chartWeek < 0) { chartWeek++; renderChart(); } };
 $('#calPrev').onclick = () => shiftWeek(-7);
 $('#calNext').onclick = () => shiftWeek(7);
 $('#calToday').onclick = () => { selDay = dayKey(new Date()); renderAgenda(); };
